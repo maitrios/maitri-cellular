@@ -9,6 +9,10 @@ NetworkManager and ModemManager do the work of managing the modem, read over the
 lpac handles eSIM profiles and qmicli the deep diagnostics, each through its proxy on
 the modem's own control port.
 
+This is the maitri build of [relctx/omarchy-cellular](https://github.com/relctx/omarchy-cellular)
+by relctx. It tracks upstream releases; [MAITRI.md](MAITRI.md) lists what differs. Credit for the
+widget goes to relctx and its contributors.
+
 <p align="center">
 <img src="preview.png" alt="The Cellular panel at rest" width="54%"><br>
 <sub>The panel: active card, connection stats, signal history, data meter, radio mode.</sub>
