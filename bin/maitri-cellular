@@ -633,6 +633,25 @@ wwan_hw_present() {
   compgen -G '/dev/cdc-wdm*' >/dev/null
 }
 
+# Workaround: on the T99W696 ModemManager's signal-quality is a stale RSSI
+# percentage (MBIM NotOpened on the extended signal reload), so derive the bars
+# from live RSRP instead: 0% at -120 dBm, 100% at -80 dBm.
+rsrp_percent() {
+  local out tech v pct
+  out=$(timeout 10 mmcli -m "$1" --signal-get -K 2>/dev/null) || return 1
+  for tech in 5g lte; do
+    v=$(kv "$out" "modem.signal.$tech.rsrp")
+    v=${v%%.*}
+    [[ $v =~ ^-[0-9]+$ ]] && ((v >= -140 && v <= -40)) || continue
+    pct=$(((v + 120) * 100 / 40))
+    ((pct < 0)) && pct=0
+    ((pct > 100)) && pct=100
+    printf '%s' "$pct"
+    return 0
+  done
+  return 1
+}
+
 read_state() {
   STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR="" ACTIVE_SLOT="" REG_STATE=""
   SLOT1_SIM="" SLOT2_SIM=""
@@ -644,7 +663,7 @@ read_state() {
     return 0
   fi
 
-  local idx dump
+  local idx dump live
   idx=$(modem_index)
   [[ -n $idx ]] || return 0
   MODEM=$idx
@@ -695,6 +714,7 @@ read_state() {
     rm -f "$STATE_DIR/user-off"
     IFACE=$(sed -n 's/^[[:space:]]*modem\.generic\.ports\.value\[[0-9]*\][[:space:]]*:[[:space:]]*\([^ ]*\) (net)$/\1/p' <<<"$dump" | head -1)
     [[ -n $IFACE ]] && IPADDR=$(ip -4 -br addr show "$IFACE" 2>/dev/null | awk '{print $3}')
+    live=$(rsrp_percent "$idx") && SIGNAL=$live
     ;;
   registered | disconnecting | connecting) STATE=registered ;;
   enabled | searching)
