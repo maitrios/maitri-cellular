@@ -5,6 +5,7 @@
   "version": "2.0.1",
   "author": "relctx",
   "license": "MIT",
+  "homepage": "https://github.com/maitrios/maitri-cellular",
   "description": "Cellular (WWAN/Mobile Data) for maitri: LTE and 5G modems, SIM and eSIM, data plans, diagnostics",
   "kinds": [
     "bar-widget"
