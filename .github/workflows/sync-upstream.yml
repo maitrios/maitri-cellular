@@ -1,0 +1,132 @@
+name: Sync upstream
+
+# Watches relctx/omarchy-cellular for new published releases. A new release is
+# rebranded onto the `upstream` branch with tools/sync-upstream.sh --no-merge
+# (which runs tools/rebrand.sh), and a pull request from `upstream` into `main`
+# is opened for review. Nothing here merges into main.
+#
+# Requires the SYNC_TOKEN secret: a fine-grained token (or GitHub App token)
+# for this repository with Contents, Pull requests and Workflows read/write.
+# The default GITHUB_TOKEN cannot push omarchy-cellular's history (it touches
+# .github/workflows) and its pull requests would not trigger CI.
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "omarchy-cellular release tag to sync, e.g. v0.10.9 (default: newest published release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Rebrand the newest omarchy-cellular release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require the sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [[ -z $SYNC_TOKEN ]]; then
+            echo "::error::Set the SYNC_TOKEN secret (contents, pull requests and workflows write on this repository)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Prepare the branches
+        run: |
+          set -euo pipefail
+          git config user.name "maitri-cellular sync"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git checkout -q -B upstream origin/upstream
+          git checkout -q main
+
+      - name: Pick the release
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag=${INPUT_TAG:-}
+          if [[ -z $tag ]]; then
+            tag=$(tools/sync-upstream.sh --latest)
+          fi
+          if [[ -z $tag ]]; then
+            echo "upstream already has the newest omarchy-cellular release"
+          elif [[ $(gh release view "$tag" --repo relctx/omarchy-cellular --json isDraft,isPrerelease --jq '.isDraft or .isPrerelease' 2>/dev/null || echo missing) != "false" ]]; then
+            # omarchy-cellular tags before its release workflow publishes; wait for the release.
+            echo "::notice::omarchy-cellular $tag is not a published release yet"
+            tag=""
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Rebrand the release onto upstream
+        if: steps.pick.outputs.tag != ''
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tools/sync-upstream.sh --no-merge "$TAG"
+          git push origin upstream
+
+      - name: Open or update the sync pull request
+        if: steps.pick.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if merged=$(git merge-tree --write-tree --name-only --no-messages main upstream); then
+            conflicts="None. CI on this pull request runs against the merged result."
+          else
+            conflicts=$(printf '%s\n' "$merged" | tail -n +2 | sed '/^$/d; s/^/- `/; s/$/`/')
+          fi
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          Rebrands omarchy-cellular [$TAG](https://github.com/relctx/omarchy-cellular/releases/tag/$TAG) onto \`upstream\` with \`tools/sync-upstream.sh --no-merge $TAG\`.
+
+          ### Conflicts with main
+
+          $conflicts
+
+          ### Merging
+
+          - Merge with **Create a merge commit**. Squash or rebase drops the upstream ancestry the next sync relies on.
+          - Do not resolve conflicts in the GitHub editor: it commits \`main\` into \`upstream\`. Resolve on a branch instead:
+
+          \`\`\`
+          git fetch origin
+          git switch -c beyer/sync-relctx-$TAG origin/main
+          git merge origin/upstream
+          tools/rebrand.sh --paths <resolved files>
+          tools/rebrand.sh --check
+          make test
+          \`\`\`
+
+            Push that branch and open its pull request; this one closes once \`upstream\` is in \`main\`.
+          - Resolve conflicts in maitri's own deltas (the RSRP bars, the Qt 6.12 palette qualification, the README credit) toward maitri's side; MAITRI.md lists them.
+          - Files maitri-cellular drops for good belong in \`DELETE_LIST\` in \`tools/rebrand.sh\`.
+          EOF
+          title="chore: sync omarchy-cellular $TAG"
+          existing=$(gh pr list --base main --head upstream --state open --json number --jq '.[0].number // empty')
+          if [[ -n $existing ]]; then
+            gh pr edit "$existing" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head upstream --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
