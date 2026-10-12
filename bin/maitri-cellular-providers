@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Query the mobile-broadband-provider-info database.
 
-Backs the carrier wizard in `omarchy-cellular carrier` and the Omarchy menu. Output
+Backs the carrier wizard in `maitri-cellular carrier` and the maitri menu. Output
 is tab-separated so shell callers can cut it apart without a JSON parser.
 
     countries                       -> code \t Country
@@ -53,11 +53,11 @@ def data_apns(gsm):
     data. Matching the whole string dropped every AT&T APN, so split first.
     """
     # The database's usage types cannot be fully trusted: Verizon's "vzwims" is
-    # tagged usage=internet when it is the IMS signalling APN, and picking it
+    # tagged usage=internet when it is the IMS signaling APN, and picking it
     # gets "service option not subscribed" from the network. Anything that
-    # looks like signalling is ranked last rather than dropped, since the
+    # looks like signaling is ranked last rather than dropped, since the
     # heuristic is a name match and could be wrong.
-    def signalling(value):
+    def signaling(value):
         v = (value or "").lower()
         return "ims" in v or v in ("sos", "emergency")
 
@@ -80,7 +80,7 @@ def data_apns(gsm):
                 (apn.findtext("password") or "").strip(),
             )
         )
-    out.sort(key=lambda row: signalling(row[0]))
+    out.sort(key=lambda row: signaling(row[0]))
     return out
 
 
