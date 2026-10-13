@@ -835,6 +835,7 @@ Panel {
     if (verb === "connect") return "Connecting…"
     if (verb === "disconnect") return "Disconnecting…"
     if (verb === "toggle") return root.connected ? "Disconnecting…" : "Connecting…"
+    if (verb === "reset") return "Resetting the modem…"
     if (verb === "sim") return "Switching SIM…"
     if (verb === "use") return "Switching SIM…"
     if (verb === "mode") return "Setting radio mode…"
@@ -3147,6 +3148,21 @@ Panel {
             InfoPair { label: "Modem"; value: root.info.model || "—" }
             InfoPair { label: "Firmware"; value: root.info.firmware || "—" }
             InfoPair { label: "Device path"; value: root.info.port ? "/dev/" + root.info.port : "—"; copyValue: root.info.port ? "/dev/" + root.info.port : "" }
+
+            Button {
+              width: parent.width
+              fontSize: Style.font.caption
+              verticalPadding: Style.space(2)
+              iconSize: Style.font.bodySmall
+              iconText: "󰑓"
+              text: root.info.modem_stuck === "1" ? "Reset modem (stuck)" : "Reset modem"
+              tooltipText: "Reset the modem and reconnect; restarts ModemManager if the modem will not reset"
+              bordered: true
+              foreground: root.info.modem_stuck === "1" ? root.urgent : root.barForeground
+              fontFamily: root.fontFamily
+              enabled: !root.busy
+              onClicked: root.runAction([root.cli, "reset"])
+            }
 
           }
           }

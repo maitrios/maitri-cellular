@@ -74,6 +74,16 @@ nm_is_active() {
   [[ "$(nmcli -t -f GENERAL.STATE connection show "$NM_CONN" 2>/dev/null)" == *:activated ]]
 }
 
+# Workaround: ModemManager can keep reporting a bearer NetworkManager has
+# already torn down (the MBIM teardown fails with NotOpened), so the modem's
+# own "connected" only counts while the profile is up or coming up. A missing
+# profile is not a contradiction: it is created on first connect.
+nm_profile_down() {
+  local out
+  out=$(nmcli -t -f GENERAL.STATE connection show "$NM_CONN" 2>/dev/null) || return 1
+  [[ $out != *:activated && $out != *:activating ]]
+}
+
 # Create the profile if it is missing. Needs a gsm device to bind to, which
 # means the modem has to be enumerated first.
 nm_ensure() {
@@ -491,7 +501,10 @@ modem_index() {
         fi
       done
     fi
-    [[ -s $f ]] || head -1 <<<"$idxs" >"$f"
+    # An empty list (ModemManager restarting, the modem re-enumerating) is
+    # not cached: the waits below poll this, and a cached blank would make
+    # them time out on a modem that came back seconds later.
+    [[ -s $f || -z $idxs ]] || head -1 <<<"$idxs" >"$f"
   }
   cat "$f" 2>/dev/null
 }
@@ -653,7 +666,7 @@ rsrp_percent() {
 }
 
 read_state() {
-  STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR="" ACTIVE_SLOT="" REG_STATE=""
+  STATE=absent OPERATOR="" TECH="" SIGNAL=0 IFACE="" IPADDR="" ACTIVE_SLOT="" REG_STATE="" MODEM_STUCK=0
   SLOT1_SIM="" SLOT2_SIM=""
 
   # A soft-blocked radio is an intentional "off", and while blocked the modem
@@ -710,6 +723,10 @@ read_state() {
 
   case $mstate in
   connected)
+    if nm_profile_down; then
+      STATE=registered MODEM_STUCK=1
+      return 0
+    fi
     STATE=connected
     rm -f "$STATE_DIR/user-off"
     IFACE=$(sed -n 's/^[[:space:]]*modem\.generic\.ports\.value\[[0-9]*\][[:space:]]*:[[:space:]]*\([^ ]*\) (net)$/\1/p' <<<"$dump" | head -1)
@@ -774,7 +791,10 @@ cmd_status() {
     ;;
   locked) echo "Cellular: SIM locked (PIN required)" ;;
   searching) echo "Cellular: searching for network (signal ${SIGNAL}%)" ;;
-  registered) echo "Cellular: registered on ${OPERATOR:-unknown}, not connected (signal ${SIGNAL}%)" ;;
+  registered)
+    echo "Cellular: registered on ${OPERATOR:-unknown}, not connected (signal ${SIGNAL}%)"
+    ((MODEM_STUCK)) && echo "  The modem still holds a connection NetworkManager dropped; run: maitri-cellular reset"
+    ;;
   connected)
     echo "Cellular: connected"
     echo "  operator:  ${OPERATOR:-unknown}"
@@ -2399,6 +2419,7 @@ cmd_panel() {
   printf 'operator=%s\n' "$OPERATOR"
   printf 'tech=%s\n' "$TECH"
   printf 'signal=%s\n' "$SIGNAL"
+  printf 'modem_stuck=%s\n' "$MODEM_STUCK"
   printf 'iface=%s\n' "$IFACE"
   printf 'ip=%s\n' "$IPADDR"
   printf 'icon=%s\n' "$(signal_icon)"
@@ -2552,6 +2573,9 @@ cmd_connect() {
   else
     local why
     why=$(failure_reason)
+    read_state
+    ((MODEM_STUCK)) && why="the modem is stuck; use Reset modem (maitri-cellular reset)"
+    echo "Connection failed${why:+ — $why}" >&2
     notify "Connection failed${why:+ — $why}"
     return 1
   fi
@@ -2565,8 +2589,65 @@ cmd_disconnect() {
 }
 
 cmd_toggle() {
-  read_state
-  if [[ $STATE == connected ]]; then cmd_disconnect; else cmd_connect; fi
+  case $(nmcli -t -f GENERAL.STATE connection show "$NM_CONN" 2>/dev/null) in
+  *:activated | *:activating) cmd_disconnect ;;
+  *) cmd_connect ;;
+  esac
+}
+
+# Workaround: once ModemManager loses the modem's MBIM session (NotOpened),
+# the bearer can neither be torn down nor raised again until the modem is
+# reset. Tries ModemManager's own reset first, which needs no root, then a
+# ModemManager restart through pkexec. Reconnects unless the user had turned
+# cellular off.
+cmd_reset() {
+  require_system_half || return 1
+  local idx want_up=1 why
+  idx=$(modem_index)
+  if [[ -z $idx ]]; then
+    echo "No modem to reset." >&2
+    notify "No modem to reset"
+    return 1
+  fi
+  [[ -f $STATE_DIR/user-off ]] && want_up=0
+
+  notify "Resetting the modem…"
+  nm_down
+  cache_flush
+  if timeout 45 mmcli -m "$idx" --reset >/dev/null 2>&1; then
+    idx=$(wait_for_new_modem "$idx" 90) || idx=""
+  else
+    idx=""
+  fi
+
+  if [[ -z $idx ]]; then
+    echo "The modem did not reset; restarting ModemManager…" >&2
+    if ! pkexec systemctl restart ModemManager.service; then
+      echo "Modem reset failed: could not restart ModemManager." >&2
+      notify "Modem reset failed"
+      return 1
+    fi
+    cache_flush
+    if ! idx=$(wait_for_modem 90); then
+      echo "The modem did not come back after the reset; a reboot may be needed." >&2
+      notify "The modem did not come back; a reboot may be needed"
+      return 1
+    fi
+  fi
+
+  if ((!want_up)); then
+    notify "Modem reset"
+    return 0
+  fi
+  if nm_up; then
+    read_state
+    notify "Modem reset — connected to ${OPERATOR:-cellular network}"
+    return 0
+  fi
+  why=$(failure_reason)
+  echo "Modem reset, but the connection did not come back${why:+ — $why}" >&2
+  notify "Modem reset, but the connection did not come back${why:+ — $why}"
+  return 1
 }
 
 # eSIM provisioning needs a Local Profile Assistant. The plugin system has no
@@ -3796,6 +3877,7 @@ notify-status) cmd_notify_status ;;
 connect | up) cmd_connect ;;
 disconnect | down) cmd_disconnect ;;
 toggle) cmd_toggle ;;
+reset) cmd_reset ;;
 restart) nm_apply && nm_up ;;  # explicit reconnect
 metered)
   case "${2:-}" in
@@ -3917,6 +3999,7 @@ usage: maitri-cellular <command>
   status              show modem/connection state (default)
   connect|disconnect  bring cellular up or down
   toggle              connect if down, disconnect if up
+  reset               reset a stuck modem and reconnect
   restart             reconnect
   mode [auto|5g|4g|3g]  show or set the radio mode
   identify            re-read ICCID/EID that ModemManager cannot
