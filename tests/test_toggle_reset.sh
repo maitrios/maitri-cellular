@@ -28,7 +28,7 @@ chmod 755 "$tmp/bin/nmcli"
   sed -n '/^cmd_toggle() {/,/^}/p' bin/maitri-cellular
   echo 'cmd_connect() { echo connect; }'
   echo 'cmd_disconnect() { echo disconnect; }'
-  echo 'NM_CONN="Omarchy Cellular"'
+  echo 'NM_CONN="cellular test profile"'
 } >"$tmp/funcs.sh"
 grep -q '^cmd_toggle()' "$tmp/funcs.sh" && grep -q '^nm_profile_down()' "$tmp/funcs.sh" \
   || fail "cmd_toggle and nm_profile_down not found in bin/maitri-cellular"
