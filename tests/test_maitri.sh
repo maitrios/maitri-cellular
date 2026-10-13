@@ -55,6 +55,7 @@ grep -q 'if nm_profile_down; then' bin/maitri-cellular \
   || fail "read_state must not trust a connected modem NetworkManager dropped"
 bash tests/test_toggle_reset.sh
 bash tests/test_modem_index.sh
+bash tests/test_read_signal.sh
 
 [[ ! -e .github/workflows/pages.yml ]] || fail "upstream workflows are on the delete list but came back"
 

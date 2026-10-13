@@ -1692,6 +1692,21 @@ cmd_mode() {
 # with a different field set for each, so parse generically: take whatever
 # "name: value" rows appear and let the panel show the ones it knows. Requires
 # --signal-setup to have armed polling, and a serving cell to measure.
+# RSRP inside the 3GPP reporting range for the block's technology: LTE
+# -140..-44 dBm (36.133), NR -156..-31 dBm (38.133). A block without RSRP
+# (GSM, UMTS) passes.
+signal_block_ok() {
+  local v=${2%% *}
+  [[ -z $v ]] && return 0
+  v=${v%%.*}
+  [[ $v =~ ^-?[0-9]+$ ]] || return 1
+  if [[ $1 == 5G ]]; then
+    ((v >= -156 && v <= -31))
+  else
+    ((v >= -140 && v <= -44))
+  fi
+}
+
 read_signal() {
   SIG_TECH="" SIG_RSSI="" SIG_RSRP="" SIG_RSRQ="" SIG_SNR="" SIG_ECIO=""
   # Only meaningful with a serving cell, and every mmcli call against a modem
@@ -1713,10 +1728,14 @@ read_signal() {
     out=$(timeout 10 mmcli -m "$idx" --signal-get 2>/dev/null) || return 0
   fi
 
-  # mmcli emits one block per access technology, and a modem that scanned 5G
-  # keeps reporting an empty 5G block alongside the live LTE one. Prefer the
-  # block matching the tech the modem reports, else the first with any value.
-  local want="${TECH:-}" cur="" got_wanted=0
+  # mmcli emits one block per access technology, headed LTE, 5G, UMTS... while
+  # TECH says LTE, 5GNR or "LTE + 5GNR". Collect every block, then take the
+  # newest technology the modem reports, else the first block left standing.
+  # A block whose RSRP is outside the 3GPP reporting range is the radio's
+  # placeholder, not a reading: an NSA LTE anchor reports -156 dBm and -23 dB.
+  local cur="" pick="" b
+  local -A b_rssi=() b_rsrp=() b_rsrq=() b_snr=() b_ecio=()
+  local -a seen=()
   while IFS= read -r line; do
     [[ $line == *"|"* ]] || continue
 
@@ -1728,23 +1747,32 @@ read_signal() {
     value=$(sed 's/.*:[[:space:]]*//; s/[[:space:]]*$//' <<<"$line")
     [[ $value == *dBm* || $value == *dB* ]] || continue
 
-    # Once the wanted tech has produced a value, ignore every other block.
-    if [[ -n $want && ${cur^^} != "${want^^}" ]]; then
-      ((got_wanted)) && continue
-    elif [[ -n $want ]]; then
-      got_wanted=1
-      [[ $SIG_TECH != "$cur" ]] && SIG_RSSI="" SIG_RSRP="" SIG_RSRQ="" SIG_SNR="" SIG_ECIO=""
-    fi
-    SIG_TECH=$cur
-
+    [[ " ${seen[*]} " == *" $cur "* ]] || seen+=("$cur")
     case "$name" in
-    rssi) SIG_RSSI=$value ;;
-    rsrp) SIG_RSRP=$value ;;
-    rsrq) SIG_RSRQ=$value ;;
-    snr | sinr | "s/n") SIG_SNR=$value ;;
-    ecio) SIG_ECIO=$value ;;
+    rssi) b_rssi[$cur]=$value ;;
+    rsrp) b_rsrp[$cur]=$value ;;
+    rsrq) b_rsrq[$cur]=$value ;;
+    snr | sinr | "s/n") b_snr[$cur]=$value ;;
+    ecio) b_ecio[$cur]=$value ;;
     esac
   done <<<"$out"
+
+  local -a prefer=()
+  [[ ${TECH^^} == *5GNR* ]] && prefer+=(5G)
+  [[ ${TECH^^} == *LTE* ]] && prefer+=(LTE)
+  [[ ${TECH^^} =~ UMTS|HSPA|HSDPA|HSUPA ]] && prefer+=(UMTS)
+  [[ ${TECH^^} =~ GSM|GPRS|EDGE ]] && prefer+=(GSM)
+  for b in "${prefer[@]}" "${seen[@]}"; do
+    signal_block_ok "$b" "${b_rsrp[$b]-}" || continue
+    [[ -n ${b_rssi[$b]-}${b_rsrp[$b]-}${b_rsrq[$b]-}${b_snr[$b]-}${b_ecio[$b]-} ]] || continue
+    pick=$b
+    break
+  done
+  if [[ -n $pick ]]; then
+    SIG_TECH=$pick
+    SIG_RSSI=${b_rssi[$pick]-} SIG_RSRP=${b_rsrp[$pick]-} SIG_RSRQ=${b_rsrq[$pick]-}
+    SIG_SNR=${b_snr[$pick]-} SIG_ECIO=${b_ecio[$pick]-}
+  fi
 
   # mmcli reports nothing between samples, which makes the panel flicker. Reuse
   # the last value each field had while it is still plausibly current.
