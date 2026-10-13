@@ -235,6 +235,7 @@ maitri-cellular status              modem, operator, signal, IP
 maitri-cellular connect|disconnect  bring cellular up or down
 maitri-cellular toggle
 maitri-cellular restart             reconnect
+maitri-cellular reset               reset a stuck modem and reconnect (also the panel's Reset modem)
 maitri-cellular mode [auto|5g|4g|3g]
 maitri-cellular sims                every card this modem can be
 maitri-cellular use <iccid>         become one: slot switch, profile enable, or both
@@ -336,11 +337,14 @@ Both default routes stay in the table, and the lower metric wins:
 
 ```
 default via 192.168.1.1  dev wlan0    metric 600   <- traffic goes here
-default via 10.0.0.1     dev wwan0    metric 700
+default via 10.0.0.1     dev wwan0    metric 30000
 ```
 
 Failover is immediate, because the modem holds its connection instead of dialing on
-demand. `ROUTE_METRIC` sets the cellular metric, and 700 is the default.
+demand. `ROUTE_METRIC` sets the cellular metric, and 30000 is the default: NetworkManager
+adds 20000 to a link whose connectivity check fails, and a VPN such as Cloudflare WARP can
+make Wi-Fi fail it while the internet works. At 700, that demoted Wi-Fi (20600) lost to
+cellular. The cost is that Wi-Fi which is up but truly dead no longer fails over by itself.
 
 `maitri-cellular prefer cellular` puts mobile first. The metric is computed from the routes
 present at the time, so it does not assume anyone else's defaults. VPNs route by policy

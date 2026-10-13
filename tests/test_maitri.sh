@@ -42,6 +42,20 @@ grep -q '^rsrp_percent() {' bin/maitri-cellular && grep -q 'live=$(rsrp_percent 
   || fail "read_state must derive SIGNAL from live RSRP"
 bash tests/test_rsrp_percent.sh
 
+# Wi-Fi wins even when NetworkManager wrongly marks it limited (+20000).
+metric=$(sed -n 's/^ROUTE_METRIC=//p' config/cellular.conf)
+[[ $metric =~ ^[0-9]+$ ]] && ((metric > 20600)) \
+  || fail "the default ROUTE_METRIC must stay above Wi-Fi's demoted 20600, got '$metric'"
+
+grep -q '^cmd_reset() {' bin/maitri-cellular && grep -q '^reset) cmd_reset ;;' bin/maitri-cellular \
+  || fail "maitri-cellular reset must stay wired up"
+grep -qF 'root.runAction([root.cli, "reset"])' shell/CellularPanel.qml \
+  || fail "the panel must keep its Reset modem button"
+grep -q 'if nm_profile_down; then' bin/maitri-cellular \
+  || fail "read_state must not trust a connected modem NetworkManager dropped"
+bash tests/test_toggle_reset.sh
+bash tests/test_modem_index.sh
+
 [[ ! -e .github/workflows/pages.yml ]] || fail "upstream workflows are on the delete list but came back"
 
 extra=$(find . -path ./.git -prune -o -mindepth 2 -type f \( -name manifest.json -o -name '*.manifest.json' \) -print)
