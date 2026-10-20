@@ -15,6 +15,7 @@ updates:
     directories: ["/"]
     multi-ecosystem-group: deps
     patterns: ["*"]
+    labels: ["kind:chore"]
     cooldown:
       default-days: 3
     groups:
